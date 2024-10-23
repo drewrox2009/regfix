@@ -1,0 +1,12 @@
+[package]
+name = "windows_registry_fixer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winreg = "0.10"
+anyhow = "1.0"
+clap = { version = "3.2", features = ["derive"] }
+hex = "0.4"
+memmap = "0.7"
+chrono = "0.4"
