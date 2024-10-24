@@ -4,9 +4,6 @@ use winreg::enums::*;
 use winreg::RegKey;
 use std::fs::File;
 use memmap::MmapOptions;
-use std::time::{Duration, UNIX_EPOCH};
-use chrono::DateTime;
-use chrono::Utc;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -17,13 +14,38 @@ struct Args {
     file: Option<String>,
 }
 
+#[derive(Debug)]
+struct ValidationIssue {
+    severity: IssueSeverity,
+    message: String,
+    details: Option<String>,
+}
+
+#[derive(Debug)]
+enum IssueSeverity {
+    Critical,
+    Warning,
+}
+
+impl std::fmt::Display for IssueSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IssueSeverity::Critical => write!(f, "CRITICAL"),
+            IssueSeverity::Warning => write!(f, "WARNING"),
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(file_path) = args.file.as_ref() {
-        println!("Checking registry file: {}", file_path);
+        println!("Registry File Analysis");
+        println!("=====================");
         check_registry_file(file_path)?;
     } else if let Some(reg_path) = args.path.as_ref() {
+        println!("Live Registry Analysis");
+        println!("=====================");
         println!("Inspecting registry path: {}", reg_path);
         
         let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -38,92 +60,222 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn calculate_header_checksum(data: &[u8]) -> u32 {
+    let mut checksum: u32 = 0;
+    
+    // Process 508 bytes in 4-byte chunks
+    for i in (0..508).step_by(4) {
+        let chunk = &data[i..i+4];
+        let value = u32::from_le_bytes(chunk.try_into().unwrap());
+        checksum ^= value;
+    }
+    
+    // Apply special cases according to specification
+    if checksum == 0xFFFFFFFF {
+        checksum = 0xFFFFFFFE; // -1 -> -2
+    } else if checksum == 0 {
+        checksum = 1;
+    }
+    
+    checksum
+}
+
 fn check_registry_file(file_path: &str) -> Result<()> {
     let file = File::open(file_path)?;
+    let file_size = file.metadata()?.len() as u32;
     let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-    println!("Checking registry file: {}", file_path);
-    println!("File size: {} bytes", mmap.len());
+    let mut issues = Vec::new();
 
-    // Check file signature
+    println!("\nFile Information");
+    println!("----------------");
+    println!("Path: {}", file_path);
+    println!("Size: {} bytes (0x{:X})", file_size, file_size);
+
+    // Basic header validation
+    println!("\nHeader Validation");
+    println!("----------------");
+
+    // 1. Signature Check (0-4)
     let signature = std::str::from_utf8(&mmap[0..4])?;
     if signature != "regf" {
-        return Err(anyhow!("Invalid registry file signature: expected 'regf', found '{}'", signature));
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Critical,
+            message: format!("Invalid signature: expected 'regf', found '{}'", signature),
+            details: Some("The registry file signature is invalid, indicating severe corruption".to_string()),
+        });
+    } else {
+        println!("Signature: Valid ('regf')");
     }
-    println!("File signature: OK ({})", signature);
 
-    // Print the first 32 bytes for debugging
-    println!("First 32 bytes:");
-    print_hex_dump(&mmap[0..32]);
-
-    // Extract and print header fields
+    // Extract header fields
     let primary_seq_num = u32::from_le_bytes(mmap[4..8].try_into()?);
     let secondary_seq_num = u32::from_le_bytes(mmap[8..12].try_into()?);
     let last_written = u64::from_le_bytes(mmap[12..20].try_into()?);
+    println!("Last Written Timestamp: 0x{:016X}", last_written);
+    
     let major_version = u32::from_le_bytes(mmap[20..24].try_into()?);
     let minor_version = u32::from_le_bytes(mmap[24..28].try_into()?);
     let file_type = u32::from_le_bytes(mmap[28..32].try_into()?);
-    let root_cell_offset = u32::from_le_bytes(mmap[32..36].try_into()?);
+    let file_format = u32::from_le_bytes(mmap[32..36].try_into()?);
+    let root_cell_offset = u32::from_le_bytes(mmap[36..40].try_into()?);
+    let hive_bins_size = u32::from_le_bytes(mmap[40..44].try_into()?);
+    let clustering_factor = u32::from_le_bytes(mmap[44..48].try_into()?);
+    let stored_checksum = u32::from_le_bytes(mmap[508..512].try_into()?);
 
-    println!("Primary Sequence Number: {}", primary_seq_num);
-    println!("Secondary Sequence Number: {}", secondary_seq_num);
+    // 2. Checksum Validation
+    let calculated_checksum = calculate_header_checksum(&mmap);
+    println!("\nChecksum Validation");
+    println!("------------------");
+    println!("Stored Checksum: 0x{:08X}", stored_checksum);
+    println!("Calculated Checksum: 0x{:08X}", calculated_checksum);
     
-    // Convert Windows FILETIME to Unix timestamp and format
-    match windows_filetime_to_unix_timestamp(last_written) {
-        Ok(unix_time) => {
-            let datetime = DateTime::<Utc>::from(UNIX_EPOCH + Duration::from_secs(unix_time));
-            println!("Last Written: {} UTC", datetime.format("%Y-%m-%d %H:%M:%S"));
-        },
-        Err(e) => println!("Error converting last written time: {}", e),
+    if stored_checksum != calculated_checksum {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Critical,
+            message: "Header checksum mismatch".to_string(),
+            details: Some(format!(
+                "Stored: 0x{:08X}, Calculated: 0x{:08X}",
+                stored_checksum, calculated_checksum
+            )),
+        });
     }
-    
-    println!("Major Version: {}", major_version);
-    println!("Minor Version: {}", minor_version);
-    println!("File Type: {} ({})", file_type, file_type_to_string(file_type));
-    println!("Root Cell Offset: 0x{:X}", root_cell_offset);
 
-    // Validate sequence numbers
+    // 3. File Size Validation
+    let base_offset = 4096; // 0x1000
+    let expected_size = base_offset + hive_bins_size;
+    println!("\nSize Validation");
+    println!("---------------");
+    println!("Base Offset: {} bytes (0x{:X})", base_offset, base_offset);
+    println!("Hive Bins Size: {} bytes (0x{:X})", hive_bins_size, hive_bins_size);
+    println!("Expected Total Size: {} bytes (0x{:X})", expected_size, expected_size);
+    println!("Actual File Size: {} bytes (0x{:X})", file_size, file_size);
+    
+    if expected_size != file_size {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warning,
+            message: "File size mismatch".to_string(),
+            details: Some(format!(
+                "Expected size {} bytes (0x{:X}), but file is {} bytes (0x{:X})",
+                expected_size, expected_size, file_size, file_size
+            )),
+        });
+    }
+
+    // 4. Sequence Number Check
+    println!("\nSequence Numbers");
+    println!("----------------");
+    println!("Primary: {}", primary_seq_num);
+    println!("Secondary: {}", secondary_seq_num);
     if primary_seq_num != secondary_seq_num {
-        println!("Warning: Primary and Secondary Sequence Numbers do not match. The hive might be corrupted.");
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warning,
+            message: "Sequence numbers do not match".to_string(),
+            details: Some(format!(
+                "Primary: {}, Secondary: {}. This may indicate an incomplete write operation.",
+                primary_seq_num, secondary_seq_num
+            )),
+        });
     }
 
-    // Check for common corruption patterns
-    if let Some(pos) = mmap.windows(4).position(|window| window == b"\0\0\0\0") {
-        println!("Warning: Found 4 consecutive null bytes at position 0x{:X}", pos);
-        println!("Hex dump around the position:");
-        print_hex_dump(&mmap[pos.saturating_sub(16)..std::cmp::min(pos+20, mmap.len())]);
+    // 5. Root Cell Validation
+    let absolute_root_offset = base_offset + root_cell_offset;
+    println!("\nRoot Cell Validation");
+    println!("-------------------");
+    println!("Root Cell Offset: 0x{:X}", root_cell_offset);
+    println!("Absolute Root Cell Offset: 0x{:X}", absolute_root_offset);
+    if absolute_root_offset >= file_size {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Critical,
+            message: "Invalid root cell offset".to_string(),
+            details: Some(format!(
+                "Absolute root cell offset (0x{:X}) is outside file bounds (0x{:X})",
+                absolute_root_offset, file_size
+            )),
+        });
     }
 
-    println!("Basic file structure check completed.");
-    Ok(())
-}
+    // 6. Version Check
+    println!("\nVersion Information");
+    println!("------------------");
+    println!("Major Version: {} (Expected: 1)", major_version);
+    println!("Minor Version: {} (Expected: 3, 4, 5, or 6)", minor_version);
+    if major_version != 1 || !(3..=6).contains(&minor_version) {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warning,
+            message: "Unexpected version numbers".to_string(),
+            details: Some(format!(
+                "Found version {}.{}, expected 1.3-1.6",
+                major_version, minor_version
+            )),
+        });
+    }
 
-fn print_hex_dump(data: &[u8]) {
-    for (i, chunk) in data.chunks(16).enumerate() {
-        print!("{:08X}  ", i * 16);
-        for byte in chunk.iter() {
-            print!("{:02X} ", byte);
-        }
-        // Pad with spaces if the chunk is less than 16 bytes
-        for _ in chunk.len()..16 {
-            print!("   ");
-        }
-        print!(" |");
-        for &byte in chunk.iter() {
-            if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
-                print!("{}", byte as char);
-            } else {
-                print!(".");
+    // 7. File Format Check
+    println!("\nFile Format");
+    println!("-----------");
+    println!("File Type: {} ({})", file_type_to_string(file_type), file_type);
+    println!("File Format: {} ({})", file_format_to_string(file_format), file_format);
+    println!("Clustering Factor: {}", clustering_factor);
+    
+    if file_type != 0 {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warning,
+            message: "Unexpected file type".to_string(),
+            details: Some("Expected primary file (0)".to_string()),
+        });
+    }
+    
+    if file_format != 1 {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warning,
+            message: "Unexpected file format".to_string(),
+            details: Some("Expected direct memory load (1)".to_string()),
+        });
+    }
+
+    // Print Analysis Summary
+    println!("\nAnalysis Summary");
+    println!("----------------");
+    if issues.is_empty() {
+        println!("✓ No issues detected in the registry file");
+    } else {
+        println!("Found {} issue(s):", issues.len());
+        
+        // Group issues by severity
+        let critical = issues.iter().filter(|i| matches!(i.severity, IssueSeverity::Critical)).count();
+        let warnings = issues.iter().filter(|i| matches!(i.severity, IssueSeverity::Warning)).count();
+        
+        println!("- {} Critical", critical);
+        println!("- {} Warnings", warnings);
+        
+        println!("\nDetailed Issues:");
+        for (i, issue) in issues.iter().enumerate() {
+            println!("\n{}. [{}] {}", i + 1, issue.severity, issue.message);
+            if let Some(details) = &issue.details {
+                println!("   Details: {}", details);
             }
         }
-        println!("|");
+
+        println!("\nRecommendations:");
+        if critical > 0 {
+            println!("! CRITICAL: This registry hive shows signs of severe corruption");
+            println!("1. DO NOT use this hive file in its current state");
+            println!("2. Attempt recovery using Windows Recovery Environment");
+            println!("3. Restore from a known good backup if available");
+        } else if warnings > 0 {
+            println!("1. Run 'chkdsk' to verify disk integrity");
+            println!("2. Use Windows' built-in registry repair tools");
+            println!("3. Consider creating a backup before making changes");
+        }
     }
+
+    Ok(())
 }
 
 fn inspect_key(key: &RegKey, path: &str) -> Result<()> {
     for (name, value) in key.enum_values().map(Result::unwrap) {
         println!("{}/{}: {:?}", path, name, value);
-        // Here you would add logic to check for corruptions and fix them
     }
     
     for subkey_name in key.enum_keys().map(Result::unwrap) {
@@ -134,21 +286,18 @@ fn inspect_key(key: &RegKey, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn windows_filetime_to_unix_timestamp(filetime: u64) -> Result<u64> {
-    // Windows FILETIME is in 100-nanosecond intervals since January 1, 1601 UTC
-    // Unix timestamp is in seconds since January 1, 1970 UTC
-    // The difference is 11644473600 seconds
-    const EPOCH_DIFF: u64 = 11644473600;
-    let seconds = filetime.checked_div(10_000_000)
-        .ok_or_else(|| anyhow!("Invalid FILETIME value"))?;
-    seconds.checked_sub(EPOCH_DIFF)
-        .ok_or_else(|| anyhow!("FILETIME too old to represent as Unix timestamp"))
-}
-
 fn file_type_to_string(file_type: u32) -> &'static str {
     match file_type {
-        0 => "Primary",
-        1 => "Log/Backup",
-        _ => "Unknown",
+        0 => "Primary File",
+        1 => "Log/Backup File",
+        2 => "Volatile (Memory-based)",
+        _ => "Unknown Type",
+    }
+}
+
+fn file_format_to_string(format: u32) -> &'static str {
+    match format {
+        1 => "Direct Memory Load",
+        _ => "Unknown Format",
     }
 }
