@@ -3,6 +3,8 @@ use clap::Parser;
 use winreg::enums::*;
 use winreg::RegKey;
 use std::fs::File;
+use std::fs;
+use std::io::{self, Write, Seek, SeekFrom};
 use memmap::MmapOptions;
 
 #[derive(Parser, Debug)]
@@ -14,14 +16,30 @@ struct Args {
     file: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ValidationIssue {
     severity: IssueSeverity,
     message: String,
     details: Option<String>,
+    fix_type: Option<FixType>,
+    fix_data: Option<FixData>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+enum FixData {
+    HiveBinsSize(u32),
+    Checksum(u32),
+    SequenceNumbers(u32, u32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum FixType {
+    HiveBinsSize,
+    Checksum,
+    SequenceNumbers,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 enum IssueSeverity {
     Critical,
     Warning,
@@ -80,6 +98,106 @@ fn calculate_header_checksum(data: &[u8]) -> u32 {
     checksum
 }
 
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{} (y/n): ", prompt);
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_lowercase() == "y")
+}
+
+fn backup_file(file_path: &str) -> Result<String> {
+    let backup_path = format!("{}.backup", file_path);
+    fs::copy(file_path, &backup_path)?;
+    Ok(backup_path)
+}
+
+fn update_hive_bins_size(file_path: &str, new_size: u32) -> Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).open(file_path)?;
+    let mut buffer = [0u8; 4];
+    buffer.copy_from_slice(&new_size.to_le_bytes());
+    file.seek(SeekFrom::Start(40))?;
+    file.write_all(&buffer)?;
+    Ok(())
+}
+
+fn update_sequence_numbers(file_path: &str, primary: u32, secondary: u32) -> Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).open(file_path)?;
+    let mut buffer = [0u8; 4];
+    
+    // Update primary sequence number
+    buffer.copy_from_slice(&primary.to_le_bytes());
+    file.seek(SeekFrom::Start(4))?;
+    file.write_all(&buffer)?;
+    
+    // Update secondary sequence number
+    buffer.copy_from_slice(&secondary.to_le_bytes());
+    file.seek(SeekFrom::Start(8))?;
+    file.write_all(&buffer)?;
+    
+    Ok(())
+}
+
+fn update_checksum(file_path: &str, new_checksum: u32) -> Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).open(file_path)?;
+    let mut buffer = [0u8; 4];
+    buffer.copy_from_slice(&new_checksum.to_le_bytes());
+    file.seek(SeekFrom::Start(508))?;
+    file.write_all(&buffer)?;
+    Ok(())
+}
+
+fn prompt_for_fixes(issues: &[ValidationIssue]) -> Result<Vec<FixType>> {
+    let fixable_issues: Vec<&ValidationIssue> = issues.iter()
+        .filter(|i| i.fix_type.is_some())
+        .collect();
+
+    if fixable_issues.is_empty() {
+        println!("\nNo fixable issues detected.");
+        return Ok(vec![]);
+    }
+
+    println!("\nFixable Issues Detected");
+    println!("=====================");
+    println!("\nWARNING: Making changes to the header will require recalculating the checksum.");
+    println!("A backup will be created before making any changes.");
+    
+    for (i, issue) in fixable_issues.iter().enumerate() {
+        println!("\n{}. [{}] {}", i + 1, issue.severity, issue.message);
+        if let Some(details) = &issue.details {
+            println!("   Details: {}", details);
+        }
+    }
+
+    println!("\nOptions:");
+    println!("1. Fix all issues");
+    println!("2. Select specific issues to fix");
+    println!("3. Skip all fixes");
+    
+    print!("\nSelect an option (1-3): ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    
+    match input.trim() {
+        "1" => Ok(fixable_issues.iter()
+            .filter_map(|i| i.fix_type.clone())
+            .collect()),
+        "2" => {
+            let mut selected_fixes = Vec::new();
+            for (i, issue) in fixable_issues.iter().enumerate() {
+                if prompt_yes_no(&format!("Fix issue #{}: {}?", i + 1, issue.message))? {
+                    if let Some(fix_type) = &issue.fix_type {
+                        selected_fixes.push(fix_type.clone());
+                    }
+                }
+            }
+            Ok(selected_fixes)
+        }
+        _ => Ok(vec![]),
+    }
+}
+
 fn check_registry_file(file_path: &str) -> Result<()> {
     let file = File::open(file_path)?;
     let file_size = file.metadata()?.len() as u32;
@@ -103,6 +221,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
             severity: IssueSeverity::Critical,
             message: format!("Invalid signature: expected 'regf', found '{}'", signature),
             details: Some("The registry file signature is invalid, indicating severe corruption".to_string()),
+            fix_type: None,
+            fix_data: None,
         });
     } else {
         println!("Signature: Valid ('regf')");
@@ -138,27 +258,33 @@ fn check_registry_file(file_path: &str) -> Result<()> {
                 "Stored: 0x{:08X}, Calculated: 0x{:08X}",
                 stored_checksum, calculated_checksum
             )),
+            fix_type: Some(FixType::Checksum),
+            fix_data: Some(FixData::Checksum(calculated_checksum)),
         });
     }
 
     // 3. File Size Validation
     let base_offset = 4096; // 0x1000
     let expected_size = base_offset + hive_bins_size;
+    let measured_hive_bins_size = file_size - base_offset;
     println!("\nSize Validation");
     println!("---------------");
     println!("Base Offset: {} bytes (0x{:X})", base_offset, base_offset);
-    println!("Hive Bins Size: {} bytes (0x{:X})", hive_bins_size, hive_bins_size);
+    println!("Stored Hive Bins Size: {} bytes (0x{:X})", hive_bins_size, hive_bins_size);
+    println!("Measured Hive Bins Size: {} bytes (0x{:X})", measured_hive_bins_size, measured_hive_bins_size);
     println!("Expected Total Size: {} bytes (0x{:X})", expected_size, expected_size);
     println!("Actual File Size: {} bytes (0x{:X})", file_size, file_size);
     
-    if expected_size != file_size {
+    if hive_bins_size != measured_hive_bins_size {
         issues.push(ValidationIssue {
             severity: IssueSeverity::Warning,
-            message: "File size mismatch".to_string(),
+            message: "Hive bins size mismatch".to_string(),
             details: Some(format!(
-                "Expected size {} bytes (0x{:X}), but file is {} bytes (0x{:X})",
-                expected_size, expected_size, file_size, file_size
+                "Stored: {} bytes, Measured: {} bytes",
+                hive_bins_size, measured_hive_bins_size
             )),
+            fix_type: Some(FixType::HiveBinsSize),
+            fix_data: Some(FixData::HiveBinsSize(measured_hive_bins_size)),
         });
     }
 
@@ -175,6 +301,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
                 "Primary: {}, Secondary: {}. This may indicate an incomplete write operation.",
                 primary_seq_num, secondary_seq_num
             )),
+            fix_type: Some(FixType::SequenceNumbers),
+            fix_data: Some(FixData::SequenceNumbers(primary_seq_num, primary_seq_num)), // Use primary as the correct value
         });
     }
 
@@ -192,6 +320,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
                 "Absolute root cell offset (0x{:X}) is outside file bounds (0x{:X})",
                 absolute_root_offset, file_size
             )),
+            fix_type: None,
+            fix_data: None,
         });
     }
 
@@ -208,6 +338,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
                 "Found version {}.{}, expected 1.3-1.6",
                 major_version, minor_version
             )),
+            fix_type: None,
+            fix_data: None,
         });
     }
 
@@ -223,6 +355,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
             severity: IssueSeverity::Warning,
             message: "Unexpected file type".to_string(),
             details: Some("Expected primary file (0)".to_string()),
+            fix_type: None,
+            fix_data: None,
         });
     }
     
@@ -231,6 +365,8 @@ fn check_registry_file(file_path: &str) -> Result<()> {
             severity: IssueSeverity::Warning,
             message: "Unexpected file format".to_string(),
             details: Some("Expected direct memory load (1)".to_string()),
+            fix_type: None,
+            fix_data: None,
         });
     }
 
@@ -245,15 +381,63 @@ fn check_registry_file(file_path: &str) -> Result<()> {
         // Group issues by severity
         let critical = issues.iter().filter(|i| matches!(i.severity, IssueSeverity::Critical)).count();
         let warnings = issues.iter().filter(|i| matches!(i.severity, IssueSeverity::Warning)).count();
+        let fixable = issues.iter().filter(|i| i.fix_type.is_some()).count();
         
         println!("- {} Critical", critical);
         println!("- {} Warnings", warnings);
+        println!("- {} Fixable", fixable);
         
         println!("\nDetailed Issues:");
         for (i, issue) in issues.iter().enumerate() {
             println!("\n{}. [{}] {}", i + 1, issue.severity, issue.message);
             if let Some(details) = &issue.details {
                 println!("   Details: {}", details);
+            }
+            if issue.fix_type.is_some() {
+                println!("   Status: Fixable");
+            }
+        }
+
+        // Handle fixes if there are any fixable issues
+        if fixable > 0 {
+            let fixes_to_apply = prompt_for_fixes(&issues)?;
+            if !fixes_to_apply.is_empty() {
+                let backup_path = backup_file(file_path)?;
+                println!("\nCreated backup at: {}", backup_path);
+
+                let mut needs_checksum_update = false;
+
+                // Apply selected fixes
+                for fix_type in fixes_to_apply {
+                    if let Some(issue) = issues.iter().find(|i| i.fix_type.as_ref() == Some(&fix_type)) {
+                        match (&fix_type, &issue.fix_data) {
+                            (FixType::HiveBinsSize, Some(FixData::HiveBinsSize(new_size))) => {
+                                update_hive_bins_size(file_path, *new_size)?;
+                                println!("Updated hive bins size to {} bytes", new_size);
+                                needs_checksum_update = true;
+                            }
+                            (FixType::Checksum, Some(FixData::Checksum(new_checksum))) => {
+                                update_checksum(file_path, *new_checksum)?;
+                                println!("Updated checksum to 0x{:08X}", new_checksum);
+                            }
+                            (FixType::SequenceNumbers, Some(FixData::SequenceNumbers(primary, secondary))) => {
+                                update_sequence_numbers(file_path, *primary, *secondary)?;
+                                println!("Updated sequence numbers to Primary: {}, Secondary: {}", primary, secondary);
+                                needs_checksum_update = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // If we made changes that affect the header, recalculate and update the checksum
+                if needs_checksum_update {
+                    let file = File::open(file_path)?;
+                    let mmap = unsafe { MmapOptions::new().map(&file)? };
+                    let new_checksum = calculate_header_checksum(&mmap);
+                    update_checksum(file_path, new_checksum)?;
+                    println!("Recalculated and updated checksum to 0x{:08X}", new_checksum);
+                }
             }
         }
 
