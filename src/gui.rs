@@ -267,7 +267,6 @@ impl RegistryFixerApp {
                     .clicked() 
                 {
                     if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Registry Files", &["dat", "hiv", ""]) 
                         .set_title("Select Registry File")
                         .pick_file() 
                     {
