@@ -10,6 +10,7 @@ winreg = "0.50.0"
 memmap = "0.7.0"
 eframe = "0.22.0"
 rfd = "0.11.0"  # For native file dialogs
+image = "0.24.6"  # For loading the logo image
 
 [dependencies.winapi]
 version = "0.3.9"

@@ -8,6 +8,9 @@ use crate::registry;
 
 const SPACING: f32 = 10.0;
 const INNER_SPACING: f32 = 5.0;
+const LOGO_SIZE: f32 = 48.0;
+const CLOSE_BUTTON_SIZE: f32 = 32.0;
+const HEADER_HEIGHT: f32 = 48.0;
 
 #[derive(Default)]
 struct UiState {
@@ -23,6 +26,7 @@ pub struct RegistryFixerApp {
     tx: Sender<Message>,
     rx: Receiver<Message>,
     ui_state: Arc<Mutex<UiState>>,
+    logo: Option<egui::TextureHandle>,
 }
 
 // New message type for UI updates
@@ -52,12 +56,33 @@ impl RegistryFixerApp {
         
         cc.egui_ctx.set_style(style);
         
+        // Load the logo
+        let logo = {
+            let image = image::io::Reader::open("assets/logo.png")
+                .unwrap()
+                .decode()
+                .unwrap();
+            let size = [image.width() as _, image.height() as _];
+            let image_buffer = image.to_rgba8();
+            let pixels = image_buffer.as_flat_samples();
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                size,
+                pixels.as_slice(),
+            );
+            Some(cc.egui_ctx.load_texture(
+                "logo",
+                color_image,
+                egui::TextureOptions::default(),
+            ))
+        };
+        
         let (tx, rx) = channel();
         
         Self {
             tx,
             rx,
             ui_state: Arc::new(Mutex::new(UiState::default())),
+            logo,
         }
     }
 
@@ -255,15 +280,124 @@ impl RegistryFixerApp {
         ui.add_space(SPACING);
     }
 
-    fn render_header(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading(egui::RichText::new("Windows Registry Fixer")
-                .size(24.0)
-                .strong());
-            
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    fn render_header(&self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let has_file = {
+            let state = self.ui_state.lock().unwrap();
+            state.selected_file.is_some()
+        };
+
+        if has_file {
+            // Regular header layout when a file is selected
+            ui.horizontal(|ui| {
+                let available_rect = ui.available_rect_before_wrap();
+                let header_rect = egui::Rect::from_min_size(
+                    available_rect.min,
+                    egui::vec2(available_rect.width(), HEADER_HEIGHT),
+                );
+
+                // Make the header draggable
+                if ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click()).is_pointer_button_down_on() {
+                    frame.drag_window();
+                }
+
+                // Header content
+                let mut content_ui = ui.child_ui(header_rect, *ui.layout());
+                content_ui.horizontal(|ui| {
+                    if let Some(logo) = &self.logo {
+                        ui.image(logo, egui::vec2(LOGO_SIZE, LOGO_SIZE));
+                        ui.add_space(SPACING);
+                    }
+                    
+                    ui.heading(egui::RichText::new("MDC RegFix")
+                        .size(24.0)
+                        .strong());
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Close button
+                        let close_button = ui.add_sized(
+                            egui::vec2(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
+                            egui::Button::new(
+                                egui::RichText::new("✕")
+                                    .size(20.0)
+                                    .color(egui::Color32::WHITE)
+                            ).fill(if ui.ui_contains_pointer() {
+                                egui::Color32::from_rgb(255, 88, 88)
+                            } else {
+                                egui::Color32::from_rgb(66, 69, 73)
+                            })
+                        );
+                        
+                        if close_button.clicked() {
+                            frame.close();
+                        }
+
+                        // File selection button
+                        if ui.button(egui::RichText::new("Select Registry File")
+                            .size(16.0))
+                            .clicked() 
+                        {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .set_title("Select Registry File")
+                                .pick_file() 
+                            {
+                                self.tx.send(Message::FileSelected(path)).unwrap();
+                            }
+                        }
+                    });
+                });
+            });
+        } else {
+            // Centered layout when no file is selected
+            ui.horizontal(|ui| {
+                let available_rect = ui.available_rect_before_wrap();
+                let header_rect = egui::Rect::from_min_size(
+                    available_rect.min,
+                    egui::vec2(available_rect.width(), HEADER_HEIGHT),
+                );
+
+                // Make the header draggable
+                if ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click()).is_pointer_button_down_on() {
+                    frame.drag_window();
+                }
+
+                // Close button in top-right
+                let mut content_ui = ui.child_ui(header_rect, *ui.layout());
+                content_ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let close_button = ui.add_sized(
+                        egui::vec2(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
+                        egui::Button::new(
+                            egui::RichText::new("✕")
+                                .size(20.0)
+                                .color(egui::Color32::WHITE)
+                        ).fill(if ui.ui_contains_pointer() {
+                            egui::Color32::from_rgb(255, 88, 88)
+                        } else {
+                            egui::Color32::from_rgb(66, 69, 73)
+                        })
+                    );
+                    
+                    if close_button.clicked() {
+                        frame.close();
+                    }
+                });
+            });
+
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() / 3.0);
+                
+                if let Some(logo) = &self.logo {
+                    ui.image(logo, egui::vec2(LOGO_SIZE * 2.0, LOGO_SIZE * 2.0));
+                    ui.add_space(SPACING);
+                }
+                
+                ui.heading(egui::RichText::new("MDC RegFix")
+                    .size(24.0)
+                    .strong());
+                
+                ui.add_space(SPACING * 2.0);
+                
                 if ui.button(egui::RichText::new("Select Registry File")
-                    .size(16.0))
+                    .size(20.0))
                     .clicked() 
                 {
                     if let Some(path) = rfd::FileDialog::new()
@@ -274,13 +408,15 @@ impl RegistryFixerApp {
                     }
                 }
             });
-        });
-        
-        if let Ok(state) = self.ui_state.lock() {
-            if let Some(file_path) = &state.selected_file {
-                ui.add_space(INNER_SPACING);
-                ui.label(egui::RichText::new(format!("Selected file: {}", file_path.display()))
-                    .size(14.0));
+        }
+            
+        if has_file {
+            if let Ok(state) = self.ui_state.lock() {
+                if let Some(file_path) = &state.selected_file {
+                    ui.add_space(INNER_SPACING);
+                    ui.label(egui::RichText::new(format!("Selected file: {}", file_path.display()))
+                        .size(14.0));
+                }
             }
         }
     }
@@ -405,11 +541,11 @@ impl RegistryFixerApp {
 }
 
 impl eframe::App for RegistryFixerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.process_messages();
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_header(ui);
+            self.render_header(ui, frame);
             ui.add_space(SPACING);
 
             let has_analysis = {
