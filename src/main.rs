@@ -62,7 +62,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             decorated: false,  // Remove the native window decorations
             min_window_size: Some(egui::vec2(800.0, 600.0)),
             initial_window_size: Some(egui::vec2(800.0, 600.0)),
-            centered: true,  // Center the window on screen
+            centered: true,
             transparent: true,
             ..Default::default()
         };

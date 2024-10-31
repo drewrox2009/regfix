@@ -11,6 +11,7 @@ const INNER_SPACING: f32 = 5.0;
 const LOGO_SIZE: f32 = 48.0;
 const CLOSE_BUTTON_SIZE: f32 = 32.0;
 const HEADER_HEIGHT: f32 = 48.0;
+const HEADER_WITH_FILE_HEIGHT: f32 = 100.0;  // Increased from 80.0 to 100.0
 
 #[derive(Default)]
 struct UiState {
@@ -281,13 +282,90 @@ impl RegistryFixerApp {
     }
 
     fn render_header(&self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let has_file = {
+        let (has_file, file_path) = {
             let state = self.ui_state.lock().unwrap();
-            state.selected_file.is_some()
+            (state.selected_file.is_some(), state.selected_file.clone())
         };
 
         if has_file {
             // Regular header layout when a file is selected
+            let available_rect = ui.available_rect_before_wrap();
+            let header_rect = egui::Rect::from_min_size(
+                available_rect.min,
+                egui::vec2(available_rect.width(), HEADER_WITH_FILE_HEIGHT),
+            );
+
+            // Make the entire header area draggable
+            let header_response = ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click());
+            if header_response.is_pointer_button_down_on() {
+                frame.drag_window();
+            }
+
+            // Header content
+            ui.allocate_ui_at_rect(header_rect, |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(SPACING);  // Add spacing at the top
+
+                    // First show the file path and close button
+                    ui.horizontal(|ui| {
+                        if let Some(path) = &file_path {
+                            ui.label(egui::RichText::new(format!("Selected file: {}", path.display()))
+                                .size(14.0));
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                            let close_button = ui.add_sized(
+                                egui::vec2(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
+                                egui::Button::new(
+                                    egui::RichText::new("✕")
+                                        .size(20.0)
+                                        .color(egui::Color32::WHITE)
+                                ).fill(if ui.ui_contains_pointer() {
+                                    egui::Color32::from_rgb(255, 88, 88)
+                                } else {
+                                    egui::Color32::from_rgb(66, 69, 73)
+                                })
+                            );
+                            
+                            if close_button.clicked() {
+                                frame.close();
+                            }
+                        });
+                    });
+
+                    ui.add_space(SPACING * 1.5);  // Increased spacing between sections
+
+                    // Then show the logo, title and select button
+                    ui.horizontal(|ui| {
+                        if let Some(logo) = &self.logo {
+                            ui.image(logo, egui::vec2(LOGO_SIZE, LOGO_SIZE));
+                            ui.add_space(SPACING);
+                        }
+                        
+                        ui.heading(egui::RichText::new("MDC RegFix")
+                            .size(24.0)
+                            .strong());
+                        
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // File selection button
+                            if ui.button(egui::RichText::new("Select Registry File")
+                                .size(16.0))
+                                .clicked() 
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Select Registry File")
+                                    .pick_file() 
+                                {
+                                    self.tx.send(Message::FileSelected(path)).unwrap();
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(SPACING);  // Add spacing at the bottom
+                });
+            });
+        } else {
+            // Centered layout when no file is selected
             ui.horizontal(|ui| {
                 let available_rect = ui.available_rect_before_wrap();
                 let header_rect = egui::Rect::from_min_size(
@@ -296,24 +374,14 @@ impl RegistryFixerApp {
                 );
 
                 // Make the header draggable
-                if ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click()).is_pointer_button_down_on() {
+                let header_response = ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click());
+                if header_response.is_pointer_button_down_on() {
                     frame.drag_window();
                 }
 
-                // Header content
-                let mut content_ui = ui.child_ui(header_rect, *ui.layout());
-                content_ui.horizontal(|ui| {
-                    if let Some(logo) = &self.logo {
-                        ui.image(logo, egui::vec2(LOGO_SIZE, LOGO_SIZE));
-                        ui.add_space(SPACING);
-                    }
-                    
-                    ui.heading(egui::RichText::new("MDC RegFix")
-                        .size(24.0)
-                        .strong());
-                    
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Close button
+                // Close button in top-right
+                ui.allocate_ui_at_rect(header_rect, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                         let close_button = ui.add_sized(
                             egui::vec2(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
                             egui::Button::new(
@@ -330,55 +398,7 @@ impl RegistryFixerApp {
                         if close_button.clicked() {
                             frame.close();
                         }
-
-                        // File selection button
-                        if ui.button(egui::RichText::new("Select Registry File")
-                            .size(16.0))
-                            .clicked() 
-                        {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .set_title("Select Registry File")
-                                .pick_file() 
-                            {
-                                self.tx.send(Message::FileSelected(path)).unwrap();
-                            }
-                        }
                     });
-                });
-            });
-        } else {
-            // Centered layout when no file is selected
-            ui.horizontal(|ui| {
-                let available_rect = ui.available_rect_before_wrap();
-                let header_rect = egui::Rect::from_min_size(
-                    available_rect.min,
-                    egui::vec2(available_rect.width(), HEADER_HEIGHT),
-                );
-
-                // Make the header draggable
-                if ui.interact(header_rect, ui.id().with("drag_area"), egui::Sense::click()).is_pointer_button_down_on() {
-                    frame.drag_window();
-                }
-
-                // Close button in top-right
-                let mut content_ui = ui.child_ui(header_rect, *ui.layout());
-                content_ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let close_button = ui.add_sized(
-                        egui::vec2(CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE),
-                        egui::Button::new(
-                            egui::RichText::new("✕")
-                                .size(20.0)
-                                .color(egui::Color32::WHITE)
-                        ).fill(if ui.ui_contains_pointer() {
-                            egui::Color32::from_rgb(255, 88, 88)
-                        } else {
-                            egui::Color32::from_rgb(66, 69, 73)
-                        })
-                    );
-                    
-                    if close_button.clicked() {
-                        frame.close();
-                    }
                 });
             });
 
@@ -408,16 +428,6 @@ impl RegistryFixerApp {
                     }
                 }
             });
-        }
-            
-        if has_file {
-            if let Ok(state) = self.ui_state.lock() {
-                if let Some(file_path) = &state.selected_file {
-                    ui.add_space(INNER_SPACING);
-                    ui.label(egui::RichText::new(format!("Selected file: {}", file_path.display()))
-                        .size(14.0));
-                }
-            }
         }
     }
 
