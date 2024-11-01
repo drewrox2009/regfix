@@ -2,9 +2,8 @@ use crate::types::*;
 use anyhow::Result;
 use std::fs::File;
 use std::fs;
-use std::io::{self, Write, Seek, SeekFrom};
+use std::io::{Write, Seek, SeekFrom};
 use memmap::MmapOptions;
-use winreg::RegKey;
 
 pub fn calculate_header_checksum(data: &[u8]) -> u32 {
     let mut checksum: u32 = 0;
@@ -22,14 +21,6 @@ pub fn calculate_header_checksum(data: &[u8]) -> u32 {
     }
     
     checksum
-}
-
-pub fn prompt_yes_no(prompt: &str) -> Result<bool> {
-    print!("{} (y/n): ", prompt);
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_lowercase() == "y")
 }
 
 pub fn backup_file(file_path: &str) -> Result<String> {
@@ -172,33 +163,4 @@ pub fn check_registry_file(file_path: &str) -> Result<AnalysisResult> {
         issues,
         file_info,
     })
-}
-
-pub fn inspect_key(key: &RegKey, path: &str) -> Result<()> {
-    for (name, value) in key.enum_values().map(Result::unwrap) {
-        println!("{}/{}: {:?}", path, name, value);
-    }
-    
-    for subkey_name in key.enum_keys().map(Result::unwrap) {
-        let subkey = key.open_subkey(&subkey_name)?;
-        inspect_key(&subkey, &format!("{}/{}", path, subkey_name))?;
-    }
-    
-    Ok(())
-}
-
-pub fn file_type_to_string(file_type: u32) -> &'static str {
-    match file_type {
-        0 => "Primary File",
-        1 => "Log/Backup File",
-        2 => "Volatile (Memory-based)",
-        _ => "Unknown Type",
-    }
-}
-
-pub fn file_format_to_string(format: u32) -> &'static str {
-    match format {
-        1 => "Direct Memory Load",
-        _ => "Unknown Format",
-    }
 }

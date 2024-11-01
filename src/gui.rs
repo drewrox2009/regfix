@@ -13,6 +13,9 @@ const CLOSE_BUTTON_SIZE: f32 = 32.0;
 const HEADER_HEIGHT: f32 = 48.0;
 const HEADER_WITH_FILE_HEIGHT: f32 = 100.0;  // Increased from 80.0 to 100.0
 
+// Embed the logo directly into the binary
+const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
 #[derive(Default)]
 struct UiState {
     show_fix_dialog: bool,
@@ -57,12 +60,13 @@ impl RegistryFixerApp {
         
         cc.egui_ctx.set_style(style);
         
-        // Load the logo
+        // Load the logo from embedded bytes
         let logo = {
-            let image = image::io::Reader::open("assets/logo.png")
-                .unwrap()
-                .decode()
-                .unwrap();
+            let image = image::load_from_memory(LOGO_BYTES)
+                .unwrap_or_else(|_| {
+                    // Create a 1x1 pixel fallback image if loading fails
+                    image::DynamicImage::new_rgb8(1, 1)
+                });
             let size = [image.width() as _, image.height() as _];
             let image_buffer = image.to_rgba8();
             let pixels = image_buffer.as_flat_samples();

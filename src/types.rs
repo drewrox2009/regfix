@@ -53,6 +53,7 @@ pub struct AnalysisResult {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]  // Some fields are used during analysis but not read afterwards
 pub struct FileInfo {
     pub path: String,
     pub size: u32,

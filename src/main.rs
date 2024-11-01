@@ -1,7 +1,11 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use clap::Parser;
 use std::path::PathBuf;
 use eframe::egui;
 use gui::RegistryFixerApp;
+use image::io::Reader as ImageReader;
+use std::io::Cursor;
 
 mod gui;
 mod registry;
@@ -14,6 +18,23 @@ struct Args {
     /// Path to the registry file to fix
     #[arg(short, long)]
     file: Option<PathBuf>,
+}
+
+fn load_icon() -> eframe::IconData {
+    let icon_data = include_bytes!("../assets/icon_256x256.ico");
+    let image = ImageReader::new(Cursor::new(icon_data))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap()
+        .into_rgba8();
+    
+    let (width, height) = image.dimensions();
+    eframe::IconData {
+        rgba: image.into_raw(),
+        width: width as _,
+        height: height as _,
+    }
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -64,6 +85,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             initial_window_size: Some(egui::vec2(800.0, 600.0)),
             centered: true,
             transparent: true,
+            icon_data: Some(load_icon()),
             ..Default::default()
         };
         
