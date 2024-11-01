@@ -3,6 +3,21 @@
 version = 3
 
 [[package]]
+name = "MDC_RegFix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "image 0.25.4",
+ "memmap",
+ "rfd",
+ "winapi",
+ "winreg",
+ "winres",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3740,21 +3755,6 @@ name = "windows_i686_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
-
-[[package]]
-name = "windows_registry_fixer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "eframe",
- "image 0.25.4",
- "memmap",
- "rfd",
- "winapi",
- "winreg",
- "winres",
-]
 
 [[package]]
 name = "windows_x86_64_gnu"

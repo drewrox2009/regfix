@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use std::path::PathBuf;
-use eframe::egui;
+use eframe::{egui, epaint::Rounding};
 use gui::RegistryFixerApp;
 use image::io::Reader as ImageReader;
 use std::io::Cursor;
@@ -86,6 +86,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             centered: true,
             transparent: true,
             icon_data: Some(load_icon()),
+            follow_system_theme: true,
             ..Default::default()
         };
         
@@ -93,7 +94,14 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = eframe::run_native(
             "MDC RegFix",
             native_options,
-            Box::new(|cc| Box::new(RegistryFixerApp::new(cc))),
+            Box::new(|cc| {
+                // Configure default styles
+                let mut style = (*cc.egui_ctx.style()).clone();
+                style.visuals.window_rounding = Rounding::same(50.0);
+                cc.egui_ctx.set_style(style);
+                
+                Box::new(RegistryFixerApp::new(cc))
+            }),
         ) {
             eprintln!("Error running application: {}", e);
             std::process::exit(1);

@@ -1,5 +1,5 @@
 [package]
-name = "windows_registry_fixer"
+name = "MDC_RegFix"
 version = "0.1.0"
 edition = "2021"
 

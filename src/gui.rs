@@ -11,7 +11,10 @@ const INNER_SPACING: f32 = 5.0;
 const LOGO_SIZE: f32 = 48.0;
 const CLOSE_BUTTON_SIZE: f32 = 32.0;
 const HEADER_HEIGHT: f32 = 48.0;
-const HEADER_WITH_FILE_HEIGHT: f32 = 100.0;  // Increased from 80.0 to 100.0
+const HEADER_WITH_FILE_HEIGHT: f32 = 100.0;
+
+const CONTENT_PADDING: f32 = 20.0;  // Added padding constant
+const WINDOW_ROUNDING: f32 = 15.0;  // Added window rounding constant
 
 // Embed the logo directly into the binary
 const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
@@ -554,44 +557,62 @@ impl RegistryFixerApp {
     }
 }
 
+
 impl eframe::App for RegistryFixerApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.process_messages();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_header(ui, frame);
-            ui.add_space(SPACING);
-
-            let has_analysis = {
-                let state = self.ui_state.lock().unwrap();
-                state.analysis_result.is_some()
-            };
-
-            if has_analysis {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
+        // Set up the frame
+        let frame_stroke = egui::Stroke::none();
+        let rounding = egui::Rounding::same(WINDOW_ROUNDING);
+        
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none()
+                .fill(ctx.style().visuals.window_fill())
+                .stroke(frame_stroke)
+                .rounding(rounding)
+                .inner_margin(CONTENT_PADDING))  // Add padding around all content
+            .show(ctx, |ui| {
+                // Create a container with rounded corners
+                egui::Frame::none()
+                    .fill(ctx.style().visuals.window_fill())
+                    .rounding(rounding)
                     .show(ui, |ui| {
+                        self.render_header(ui, frame);
+                        ui.add_space(SPACING);
+
+                        let has_analysis = {
+                            let state = self.ui_state.lock().unwrap();
+                            state.analysis_result.is_some()
+                        };
+
+                        if has_analysis {
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    if let Ok(state) = self.ui_state.lock() {
+                                        if let Some(result) = &state.analysis_result {
+                                            ui.heading(egui::RichText::new("File Information").size(20.0));
+                                            Self::render_file_info(ui, &result.file_info);
+                                            ui.separator();
+                                        }
+                                    }
+                                    self.render_issues(ui);
+                                });
+                        }
+
                         if let Ok(state) = self.ui_state.lock() {
-                            if let Some(result) = &state.analysis_result {
-                                ui.heading(egui::RichText::new("File Information").size(20.0));
-                                Self::render_file_info(ui, &result.file_info);
+                            if !state.status_message.is_empty() {
                                 ui.separator();
+                                ui.label(egui::RichText::new(&state.status_message)
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(76, 175, 80)));
                             }
                         }
-                        self.render_issues(ui);
                     });
-            }
+            });
 
-            if let Ok(state) = self.ui_state.lock() {
-                if !state.status_message.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new(&state.status_message)
-                        .size(14.0)
-                        .color(egui::Color32::from_rgb(76, 175, 80)));
-                }
-            }
-
-            self.render_fix_dialog(ctx);
-        });
+        self.render_fix_dialog(ctx);
     }
 }
+
